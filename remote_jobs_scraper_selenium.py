@@ -1,14 +1,55 @@
+"""Scrape remote developer jobs from RemoteOK into a CSV file."""
+
+import argparse
 import csv
 import time
-from typing import List, Dict
 from pathlib import Path
+from typing import Dict, List
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
+
+JobRecord = Dict[str, str]
+OUTPUT_FIELDS = ["title", "company", "location", "salary", "url"]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Scrape remote developer jobs from RemoteOK and export to CSV."
+    )
+    parser.add_argument(
+        "--base-url",
+        default="https://remoteok.com/remote-dev-jobs",
+        help="RemoteOK listing URL to scrape.",
+    )
+    parser.add_argument(
+        "--pages",
+        type=int,
+        default=1,
+        help="Number of listing pages to scrape (default: 1).",
+    )
+    parser.add_argument(
+        "--sleep",
+        type=float,
+        default=2.0,
+        help="Seconds to wait between pages (default: 2).",
+    )
+    parser.add_argument(
+        "--output",
+        default="remote_jobs_selenium.csv",
+        help="Output CSV path. Relative paths are resolved from this script folder.",
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run Chrome in headed mode (browser window visible).",
+    )
+    return parser.parse_args()
 
 
 def create_driver(headless: bool = True) -> webdriver.Chrome:
@@ -19,103 +60,67 @@ def create_driver(headless: bool = True) -> webdriver.Chrome:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-
-    # user-agent "de navegador normal"
+    options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/122.0 Safari/537.36"
     )
 
-    driver = webdriver.Chrome(
+    return webdriver.Chrome(
         service=ChromeService(ChromeDriverManager().install()),
         options=options,
     )
-    return driver
 
 
-def scrape_remoteok(driver: webdriver.Chrome, url: str) -> List[Dict]:
+def extract_text(row: WebElement, selector: str) -> str:
+    try:
+        return row.find_element(By.CSS_SELECTOR, selector).text.strip()
+    except Exception:
+        return ""
+
+
+def scrape_remoteok(driver: webdriver.Chrome, url: str) -> List[JobRecord]:
     driver.get(url)
-
     wait = WebDriverWait(driver, 15)
-    wait.until(
-        EC.presence_of_all_elements_located(
-            (By.CSS_SELECTOR, "tr.job, tr[data-id]")
-        )
-    )
+    wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "tr.job, tr[data-id]")))
 
     time.sleep(2)
 
-    jobs: List[Dict] = []
-
-    # cada vaga é um <tr> com class job e data-id
     rows = driver.find_elements(By.CSS_SELECTOR, "tr.job, tr[data-id][data-href]")
+    print(f"[INFO] Found {len(rows)} job rows on: {url}")
 
-    print(f"DEBUG: encontrei {len(rows)} linhas de vaga na página")
-
+    jobs: List[JobRecord] = []
     for row in rows:
         row_classes = row.get_attribute("class") or ""
         if "closed" in row_classes or "expand" in row_classes:
-            # ignora linha de expansão / descrição, etc.
             continue
 
-        # monta URL a partir do data-href
         data_href = row.get_attribute("data-href") or row.get_attribute("data-url") or ""
-        if data_href and data_href.startswith("/"):
-            job_url = "https://remoteok.com" + data_href
-        else:
-            job_url = ""
+        job_url = f"https://remoteok.com{data_href}" if data_href.startswith("/") else ""
 
-        title = ""
-        company = ""
-        location = ""
-        salary = ""
+        record: JobRecord = {
+            "title": extract_text(
+                row,
+                "td.company.position.company_and_position h2[itemprop='title'], "
+                "h2[itemprop='title']",
+            ),
+            "company": extract_text(
+                row,
+                "td.company.position.company_and_position h3[itemprop='name'], "
+                "h3[itemprop='name']",
+            ),
+            "location": extract_text(row, "div.location"),
+            "salary": extract_text(row, "div.salary"),
+            "url": job_url,
+        }
 
-        try:
-            title_el = row.find_element(
-                By.CSS_SELECTOR,
-                "td.company.position.company_and_position h2[itemprop='title'], h2[itemprop='title']",
-            )
-            title = title_el.text.strip()
-        except Exception:
-            pass
-
-        try:
-            company_el = row.find_element(
-                By.CSS_SELECTOR,
-                "td.company.position.company_and_position h3[itemprop='name'], h3[itemprop='name']",
-            )
-            company = company_el.text.strip()
-        except Exception:
-            pass
-
-        try:
-            loc_el = row.find_element(By.CSS_SELECTOR, "div.location")
-            location = loc_el.text.strip()
-        except Exception:
-            pass
-
-        try:
-            salary_el = row.find_element(By.CSS_SELECTOR, "div.salary")
-            salary = salary_el.text.strip()
-        except Exception:
-            pass
-
-        # se não tiver pelo menos título e empresa, não vale como vaga
-        if not title and not company:
+        if not record["title"] and not record["company"]:
             continue
 
-        jobs.append(
-            {
-                "title": title,
-                "company": company,
-                "location": location,
-                "salary": salary,
-                "url": job_url,
-            }
-        )
+        jobs.append(record)
 
-    print(f"DEBUG: jobs extraídos = {len(jobs)}")
+    print(f"[INFO] Extracted {len(jobs)} valid jobs from page.")
     return jobs
 
 
@@ -123,55 +128,64 @@ def scrape_multiple_pages(
     driver: webdriver.Chrome,
     base_url: str,
     pages: int = 1,
-    sleep_seconds: int = 2,
-) -> List[Dict]:
-    all_jobs: List[Dict] = []
+    sleep_seconds: float = 2.0,
+) -> List[JobRecord]:
+    all_jobs: List[JobRecord] = []
+    seen_keys = set()
 
     for page in range(1, pages + 1):
-        if page == 1:
-            url = base_url
-        else:
-            url = f"{base_url}?pg={page}"
+        url = base_url if page == 1 else f"{base_url}?pg={page}"
+        print(f"[INFO] Scraping page {page}/{pages}: {url}")
 
-        print(f"Scraping página {page}: {url}")
-        jobs = scrape_remoteok(driver, url)
-        print(f"Encontradas {len(jobs)} vagas nesta página.")
-        all_jobs.extend(jobs)
+        page_jobs = scrape_remoteok(driver, url)
+        print(f"[INFO] Page {page} returned {len(page_jobs)} jobs.")
 
-        time.sleep(sleep_seconds)
+        for job in page_jobs:
+            dedupe_key = job["url"] or f'{job["title"]}::{job["company"]}'
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+            all_jobs.append(job)
 
+        if page < pages:
+            time.sleep(sleep_seconds)
+
+    print(f"[INFO] Total unique jobs collected: {len(all_jobs)}")
     return all_jobs
 
 
-def save_to_csv(jobs: List[Dict], filename: str = "remote_jobs_selenium.csv") -> None:
-    if not jobs:
-        print("Nenhuma vaga encontrada.")
-        return
+def save_to_csv(jobs: List[JobRecord], filename: str = "remote_jobs_selenium.csv") -> Path:
+    output_path = Path(filename)
+    if not output_path.is_absolute():
+        script_dir = Path(__file__).parent.resolve()
+        output_path = script_dir / output_path
 
-    # sempre salvar na mesma pasta deste arquivo .py
-    script_dir = Path(__file__).parent.resolve()
-    out_path = script_dir / filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Writing CSV to: {output_path}")
 
-    print("Salvando CSV em:", out_path)
-
-    fieldnames = ["title", "company", "location", "salary", "url"]
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    with output_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=OUTPUT_FIELDS)
         writer.writeheader()
         writer.writerows(jobs)
 
-    print(f"Salvo {len(jobs)} vagas em {out_path}")
+    print(f"[INFO] Saved {len(jobs)} rows.")
+    return output_path
 
 
-def main():
-    base_url = "https://remoteok.com/remote-dev-jobs"  # ajuste o filtro que quiser
-    pages_to_scrape = 1  # pode mudar pra 2, 3...
+def main() -> None:
+    args = parse_args()
+    if args.pages < 1:
+        raise ValueError("--pages must be at least 1.")
 
-    driver = create_driver(headless=True)
-
+    driver = create_driver(headless=not args.headed)
     try:
-        jobs = scrape_multiple_pages(driver, base_url, pages=pages_to_scrape)
-        save_to_csv(jobs, "remote_jobs_selenium.csv")
+        jobs = scrape_multiple_pages(
+            driver=driver,
+            base_url=args.base_url,
+            pages=args.pages,
+            sleep_seconds=args.sleep,
+        )
+        save_to_csv(jobs, args.output)
     finally:
         driver.quit()
 

@@ -1,5 +1,35 @@
-import pandas as pd
+"""Generate an Excel report from scraped RemoteOK job data."""
+
+import argparse
 from pathlib import Path
+
+import pandas as pd
+
+EXPECTED_COLUMNS = ["title", "company", "location", "salary", "url"]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create an Excel report from a RemoteOK jobs CSV file."
+    )
+    parser.add_argument(
+        "--input",
+        default="remote_jobs_selenium.csv",
+        help="Input CSV path. Relative paths are resolved from this script folder.",
+    )
+    parser.add_argument(
+        "--output",
+        default="remote_jobs_report.xlsx",
+        help="Output Excel path. Relative paths are resolved from this script folder.",
+    )
+    return parser.parse_args()
+
+
+def resolve_path(path_value: str) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return Path(__file__).parent.resolve() / path
 
 
 def load_jobs(csv_path: Path) -> pd.DataFrame:
@@ -7,75 +37,81 @@ def load_jobs(csv_path: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"CSV not found: {csv_path}")
 
     df = pd.read_csv(csv_path)
-    # garante colunas esperadas
-    expected_cols = {"title", "company", "location", "salary", "url"}
-    missing = expected_cols.difference(df.columns)
+    missing = sorted(set(EXPECTED_COLUMNS).difference(df.columns))
     if missing:
-        raise ValueError(f"CSV is missing columns: {missing}")
-
+        raise ValueError(f"CSV is missing required columns: {missing}")
     return df
+
+
+def normalize_text(series: pd.Series) -> pd.Series:
+    return series.fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+
+
+def join_unique(values: pd.Series) -> str:
+    unique_values = sorted({value for value in values if isinstance(value, str) and value})
+    return ", ".join(unique_values)
 
 
 def clean_jobs(df: pd.DataFrame) -> pd.DataFrame:
-    # remove linhas totalmente vazias de título/empresa
-    df = df.copy()
-    df["title"] = df["title"].astype(str).str.strip()
-    df["company"] = df["company"].astype(str).str.strip()
-    df["location"] = df["location"].astype(str).str.strip()
-    df["salary"] = df["salary"].astype(str).str.strip()
+    cleaned = df.copy()
+    for column in EXPECTED_COLUMNS:
+        cleaned[column] = normalize_text(cleaned[column])
 
-    df = df[(df["title"] != "") & (df["company"] != "")]
-    return df
+    cleaned = cleaned[(cleaned["title"] != "") & (cleaned["company"] != "")]
+    cleaned["location"] = cleaned["location"].replace("", "Unspecified")
+    cleaned = cleaned.drop_duplicates(
+        subset=["title", "company", "location", "url"], keep="first"
+    ).reset_index(drop=True)
+    return cleaned
 
 
 def summarize_by_company(df: pd.DataFrame) -> pd.DataFrame:
-    by_company = (
+    return (
         df.groupby("company")
         .agg(
             jobs_count=("title", "count"),
-            locations=("location", lambda x: ", ".join(sorted(set(x)))),
+            locations=("location", join_unique),
         )
         .reset_index()
-        .sort_values("jobs_count", ascending=False)
+        .sort_values(["jobs_count", "company"], ascending=[False, True])
     )
-    return by_company
 
 
 def summarize_by_location(df: pd.DataFrame) -> pd.DataFrame:
-    by_location = (
+    return (
         df.groupby("location")
         .agg(
             jobs_count=("title", "count"),
-            companies=("company", lambda x: ", ".join(sorted(set(x)))),
+            companies=("company", join_unique),
         )
         .reset_index()
-        .sort_values("jobs_count", ascending=False)
+        .sort_values(["jobs_count", "location"], ascending=[False, True])
     )
-    return by_location
 
 
-def main():
-    script_dir = Path(__file__).parent.resolve()
-    csv_path = script_dir / "remote_jobs_selenium.csv"
-    output_excel = script_dir / "remote_jobs_report.xlsx"
-
-    print(f"Lendo dados de: {csv_path}")
-    df = load_jobs(csv_path)
-    df = clean_jobs(df)
-
-    print(f"Total de vagas após limpeza: {len(df)}")
-
+def write_report(df: pd.DataFrame, output_excel: Path) -> None:
     by_company = summarize_by_company(df)
     by_location = summarize_by_location(df)
 
-    print(f"Salvando relatório em: {output_excel}")
-
+    output_excel.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
         df.to_excel(writer, sheet_name="Raw_Data", index=False)
         by_company.to_excel(writer, sheet_name="By_Company", index=False)
         by_location.to_excel(writer, sheet_name="By_Location", index=False)
 
-    print("Relatório Excel gerado com sucesso.")
+
+def main() -> None:
+    args = parse_args()
+    csv_path = resolve_path(args.input)
+    output_excel = resolve_path(args.output)
+
+    print(f"[INFO] Loading data from: {csv_path}")
+    cleaned_jobs = clean_jobs(load_jobs(csv_path))
+    print(f"[INFO] Jobs after cleaning: {len(cleaned_jobs)}")
+
+    print(f"[INFO] Writing report to: {output_excel}")
+    write_report(cleaned_jobs, output_excel)
+    print("[INFO] Excel report generated successfully.")
 
 
 if __name__ == "__main__":
