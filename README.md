@@ -67,15 +67,15 @@ This enables fast handoff to business users, analysts, or dashboards.
 ### 1. Install dependencies
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate  # Linux/macOS
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
 ### 2. Run the scraper
 
 ```bash
-python remote_jobs_scraper_selenium.py --pages 1 --output remote_jobs_selenium.csv
+python3 remote_jobs_scraper_selenium.py --pages 1 --output remote_jobs_selenium.csv
 ```
 
 Optional flags:
@@ -87,7 +87,7 @@ Optional flags:
 ### 3. Generate the Excel report
 
 ```bash
-python job_report_automation.py --input remote_jobs_selenium.csv --output remote_jobs_report.xlsx
+python3 job_report_automation.py --input remote_jobs_selenium.csv --output remote_jobs_report.xlsx
 ```
 
 ---
@@ -96,6 +96,11 @@ python job_report_automation.py --input remote_jobs_selenium.csv --output remote
 
 ```text
 .
+├── .github/
+│   └── pull_request_template.md      # Standardized PR quality gate
+├── docs/
+│   └── MAIN_RELEASE_CHECKLIST.md     # Main merge checklist
+├── CHANGELOG.md                      # Release history
 ├── remote_jobs_scraper_selenium.py   # Data collection
 ├── job_report_automation.py          # Data cleanup and Excel reporting
 ├── remote_jobs_selenium.csv          # Sample output dataset
@@ -111,6 +116,12 @@ python job_report_automation.py --input remote_jobs_selenium.csv --output remote
 - The codebase is intentionally small, readable, and easy to adapt for client projects.
 - Naming, output schema, and workflow steps are structured for professional delivery.
 - This repository can be extended with scheduling, cloud storage, and BI integrations.
+
+## Release and Collaboration Standards
+
+- Follow `docs/MAIN_RELEASE_CHECKLIST.md` before merging to `main`.
+- Keep `CHANGELOG.md` updated for each meaningful change.
+- Use `.github/pull_request_template.md` to keep PRs consistent and review-friendly.
 
 ---
 
